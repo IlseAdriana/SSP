@@ -12,7 +12,7 @@ class BMS(BaseEstimator):
     def fit(self, X, y):
         
         def generate_spikeTrain(i_ext):
-            v = [] # Vector de ..
+            v = [] # Vector de ...
             spike_train = [] # Tren de pulsos
 
             v.append(0.) # Inicializamos el vector de ... con 0
