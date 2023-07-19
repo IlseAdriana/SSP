@@ -1,69 +1,84 @@
-import Problem
 import numpy as np
+from pymoo.core.problem import Problem
+from sklearn.model_selection import train_test_split
 from sklearn.datasets import load_iris
 from pymoo.algorithms.soo.nonconvex.pso import PSO
 from pymoo.optimize import minimize
 
-# Función que contiene la metaheuristica que brindará el vector de pesos para cada clase
-def get_weights(n_var, pop_size, xl, xu, n_gen):
-    problema = Problem.myProblem(n_var=n_var, xl=xl, xu=xu)
-    algoritmo = PSO(pop_size=pop_size)
 
-    resultado = minimize(
-        problem = problema,
-        algorithm = algoritmo,
-        termination = ('n_gen', n_gen),
-    )
+# Clase que representa la neurona basada en el modelo BMS
+class BMS:
+    # Función para generar los trenes de pulso y las tasas de disparo
+    def __init__(self, sim_time=1000, gamma=0.5, theta=1):
+        self.sim_time = sim_time
+        self.gamma = gamma
+        self.theta = theta
 
-    return (resultado.X)
+    def simulate(self, i_ext):
+        v = []  # Vector de voltaje de membrana
+        spike_train = []  # Tren de pulsos
+
+        v.append(0.0)  # Inicializamos el vector de voltaje con 0
+
+        # Ciclo para obtener el tren de pulsos
+        for k in range(1, self.sim_time):
+            # Operación para obtener el valor del voltaje
+            _v = self.gamma * v[-1] * (1 - (1 if v[-1] >= self.theta else 0)) + i_ext
+
+            # Comprobar si la neurona descanso
+            if _v >= self.theta:
+                spike_train.append(k)
+                _v = self.theta  # Ajustamos el voltaje al valor del umbral
+
+            v.append(_v)  # Agregamos el voltaje
+
+        # Devolvemos el tren de pulsos y la tasa de disparo
+        return spike_train, (len(spike_train) / self.sim_time)
 
 
-def main():
-    X, y = load_iris(return_X_y=True)
-    n_classes = len(np.unique(y)) # Cantidad de clases
+# Clase que representa la metaheurística que proporciona el vector de pesos
+class BMS_Training(Problem):
+    def __init__(self, X, y, sim_time, gamma, theta, n_var, xl, xu):
+        super().__init__(n_var=n_var, xl=xl, xu=xu)
+        self.X = X
+        self.y = y
+        self.neuron = BMS(sim_time, gamma, theta)
+        self.n_class = len(np.unique(y))
 
-    patterns = [[] for _ in range(n_classes)] # Crear una lista por clase
-    
-    # Ciclo para guardar los patrones en la lista de su clase correspondiente
-    for pattern, label in zip(X, y):
-        patterns[label].append(pattern) 
+    def _evaluate(self, x, out, *args, **kwargs):
+        fit = np.zeros(len(x))
+        firing_rates = {i: [] for i in range(self.n_class)}
 
-    patterns = np.asarray(patterns, dtype=float) # Convertimos a un arreglo
+        for i, w in enumerate(x):
+            # Ciclo para obtener las tasas de disparo por cada clase
+            for _x, _y in zip(self.X, self.y):
+                _iext = (
+                    _x @ w
+                )  # Generar el estímulo a partir del patron actual y los pesos
+                _, _fr = self.neuron.simulate(
+                    _iext
+                )  # Obtener la cantidad de disparos que hizo el patrón actual
+                firing_rates[_y].append(
+                    _fr
+                )  # Agregar la tasa de disparo del patrón a la clase correspondiente
 
-    pop_size = 10 # Población del PSO
-    xl = -10 # Límite inferior
-    xu = 10 # Límite superior
-    n_gen = 15 # Número de generaciones
+            _m = np.zeros(self.n_class)
+            _sd = np.zeros(self.n_class)
 
-    # Obtenemos los pesos (solución de la metaheurística)
-    weights = np.asarray(get_weights(n_classes, pop_size, xl, xu, n_gen), dtype=float) 
-    
-    print(f'Proposed weights per class: {weights}')
+            # Ciclo para obtener la media y la desviacón estándar por cada clase
+            for _k in firing_rates.keys():
+                _m[_k] = np.mean(firing_rates[_k])
+                _sd[_k] = np.std(firing_rates[_k])
 
-    i_ext = [[] for _ in range(n_classes)]
-    for i in range(n_classes):
+            # Ciclo para obtener la distancia entre las tasas de disparo por clase
+            sum_dist = 0
+            for j in range(len(_m)):
+                for k in range(j + 1, len(_m)):
+                    # tmp = _m[j] - _m[k]
+                    # sum_dist += np.sqrt(np.dot(tmp, tmp))
+                    sum_dist += np.linalg.norm(_m[j] - _m[k])
 
-        # Ciclo para obtener el producto-punto del patron con su peso correspondiente
-        for pattern in patterns[i]:
-            i_ext[i].append(pattern @ weights[i]) 
+            # Obtener la aptitud de cada clase
+            fit[i] = ((1 / sum_dist) if sum_dist > 0 else 1000000) + (np.sum(_sd) if np.sum(_sd) > 0 else 1000000)
 
-    i_ext = np.asarray(i_ext)
-
-    i_ext_means = np.mean(i_ext, axis=1) # Medias de cada clase
-    print(f'Means per class: \n{i_ext_means}')
-
-    theta = 1 # Umbral
-    gamma = 0.5 # Tasa de fuga
-    spike_train = []
-    v = np.zeros(n_classes, dtype=float) # Neuronas
-
-    for i in range(1, n_classes):
-        v[i] = gamma * v[i-1] * (1 - (1 if v[i-1] >= theta else 0)) + i_ext_means[i]
-
-        if (v[i] > theta):
-            spike_train.append(i)
-
-    print(f'Spike train: {spike_train}')
-
-if __name__ == '__main__':
-    main()
+        out["F"] = fit
